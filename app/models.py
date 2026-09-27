@@ -102,6 +102,41 @@ class CheckResponse(BaseModel):
     results: list[ScanResult]
 
 
+# ---------- 召回规则关系分析 (/v1/recall/rule-relations) ----------
+
+
+class RuleRelationsRequest(BaseModel):
+    """规则关系分析请求:只接收 2~100 条召回规则(格式同召回核验)。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rules: list[Rule] = Field(min_length=2, max_length=100)
+
+    @field_validator("rules")
+    @classmethod
+    def _rule_ids_unique(cls, v: list[Rule]) -> list[Rule]:
+        return _ensure_unique_rule_ids(v)
+
+
+class RuleRelationPair(BaseModel):
+    """一对命中集合有交集的规则;left/right 为输入下标(从 0 计)。"""
+
+    left_index: int
+    right_index: int
+    left_id: str
+    right_id: str
+    relation: Literal[
+        "equivalent", "left_contains_right", "right_contains_left", "partial_overlap"
+    ]
+    witness_scan: str  # 同时命中两条规则的合法 GS1 扫描串
+
+
+class RuleRelationsResponse(BaseModel):
+    # 不可能命中任何合法扫描(日期区间落在 2000~2099 之外)的规则 ID,按输入顺序
+    unsatisfiable_rule_ids: list[str]
+    pairs: list[RuleRelationPair]  # 有交集的规则对,按 (left_index, right_index) 排序
+
+
 # ---------- 实物交接审计 (/v1/custody/audit) ----------
 
 

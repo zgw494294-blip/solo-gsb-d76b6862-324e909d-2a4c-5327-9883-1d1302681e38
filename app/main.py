@@ -17,15 +17,19 @@ from .models import (
     IsolationPlanResponse,
     PackingAuditRequest,
     PackingAuditResponse,
+    RuleRelationPair,
+    RuleRelationsRequest,
+    RuleRelationsResponse,
     ScanErrorBody,
     ScanFields,
     ScanResult,
 )
 from .packing import audit_packing
+from .rule_relations import analyze_rule_relations
 
 app = FastAPI(
     title="GS1 扫码核验 API",
-    version="1.3.0",
+    version="1.4.0",
     summary="解析 GS1 扫描串(AI 01/10/17/21):召回规则匹配、实物交接重放、装拆包装审计与召回隔离计划",
 )
 
@@ -85,3 +89,27 @@ def packing_audit(request: PackingAuditRequest) -> PackingAuditResponse:
 def recall_isolation_plan(request: IsolationPlanRequest) -> IsolationPlanResponse:
     """库存扫描命中召回规则后,沿最终包装父链归并到最高层已封签祖先,输出隔离单元。"""
     return build_isolation_plan(request)
+
+
+@app.post(
+    "/v1/recall/rule-relations",
+    response_model=RuleRelationsResponse,
+    tags=["recall"],
+)
+def recall_rule_relations(request: RuleRelationsRequest) -> RuleRelationsResponse:
+    """找出可能命中同一合法扫描串的规则对,并标注集合关系与凭证扫描串。"""
+    impossible, pairs = analyze_rule_relations(request.rules)
+    return RuleRelationsResponse(
+        unsatisfiable_rule_ids=impossible,
+        pairs=[
+            RuleRelationPair(
+                left_index=i,
+                right_index=j,
+                left_id=request.rules[i].id,
+                right_id=request.rules[j].id,
+                relation=relation,
+                witness_scan=witness,
+            )
+            for i, j, relation, witness in pairs
+        ],
+    )

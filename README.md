@@ -1,11 +1,12 @@
 # GS1 扫码核验 API
 
-基于 FastAPI 的 GS1 条码解析服务,提供四个接口:
+基于 FastAPI 的 GS1 条码解析服务,提供五个接口:
 
 - **召回核验**:上传一批扫描串和一批召回规则,逐条返回解析出的字段(GTIN / 批号 / 序列号 / 日期)以及命中的规则 ID。
 - **交接审计**:上传一批实物交接事件,按时间重放并审计每件实物(GTIN + 序列号)的持有人流转,返回成功事件与失败原因。
 - **装拆包装审计**:上传一批按顺序执行的装入 / 取出操作,重放并审计实物(GTIN + 序列号)间的直接包装关系,返回涉及实物的直接父件 / 子件 / 最外层容器与失败原因。
 - **召回隔离计划**:上传库存扫描、召回规则、装拆操作与已封签实物扫描串,命中召回的实物沿最终包装父链归并到最高层已封签祖先,输出隔离单元。
+- **召回规则关系分析**:上传一批召回规则,先列出不可能命中任何合法扫描的规则,再两两比较其余规则,返回命中集合有交集的规则对(等价 / 包含 / 部分相交)及一条同时命中的凭证扫描串。
 
 ## 快速启动
 
@@ -16,6 +17,7 @@ docker compose up --build
 服务监听 **8000** 端口:
 
 - 召回核验:`POST http://localhost:8000/v1/recall/check`
+- 召回规则关系分析:`POST http://localhost:8000/v1/recall/rule-relations`
 - 交接审计:`POST http://localhost:8000/v1/custody/audit`
 - 装拆包装审计:`POST http://localhost:8000/v1/packing/audit`
 - 召回隔离计划:`POST http://localhost:8000/v1/recall/isolation-plan`
@@ -121,6 +123,81 @@ curl -s http://localhost:8000/v1/recall/check \
 ```
 
 > JSON 中 FNC1 写作 `\u001d`;shell 里也可用 `$'...\x1d...'` 构造。
+
+### `POST /v1/recall/rule-relations`
+
+规则上线前的静态分析:接收 **2~100 条**召回规则(字段格式与校验同召回核验,`id` 须唯一),找出可能命中**同一条合法扫描串**的规则对。
+
+请求体:
+
+| 字段 | 类型 | 约束 |
+| --- | --- | --- |
+| `rules` | `object[]` | 2~100 条规则,格式同召回核验 |
+
+处理规则:
+
+1. AI 17 只可能是 **2000-01-01~2099-12-31** 的有效日期。规则所附日期闭区间与这段范围**无交集**时(如 `date_from` 晚于 2099-12-31,或 `date_to` 早于 2000-01-01),该规则不可能命中任何合法扫描,其 ID 先按**输入顺序**列入 `unsatisfiable_rule_ids`,且不参与两两比较。
+2. 其余规则按输入下标两两比较,仅返回**命中集合有交集**的规则对,按 `(left_index, right_index)` 升序排列。
+3. 关系 `relation` 取值:
+   - `equivalent`(等价):两条规则的命中集合相同;
+   - `left_contains_right`(左包含右):右规则的命中集合是左规则的**真子集**;
+   - `right_contains_left`(右包含左):左规则的命中集合是右规则的**真子集**;
+   - `partial_overlap`(部分相交):有交集但互不包含。
+4. 每对返回 `witness_scan`:一条**同时命中两者**的合法 GS1 扫描串(不带 `]d2` 前缀)。构造方式:
+   - 批号(AI 10)、序列号(AI 21)只在至少一条规则约束时出现,取约束值;
+   - 两条规则都约束日期时取日期交集内**最早一天**,仅一条约束时取该区间的最早可行日;
+   - 字段顺序为 `01`、`17`、`10`、`21`;变长字段(批号 / 序列号)后仍有 AI 时加 **FNC1**(JSON 中写作 `\u001d`)。
+
+响应:
+
+```json
+{
+  "unsatisfiable_rule_ids": ["recall-expired"],
+  "pairs": [
+    {
+      "left_index": 0,
+      "right_index": 1,
+      "left_id": "recall-all",
+      "right_id": "recall-lot1",
+      "relation": "left_contains_right",
+      "witness_scan": "010950600112345410LOT1"
+    },
+    {
+      "left_index": 1,
+      "right_index": 2,
+      "left_id": "recall-lot1",
+      "right_id": "recall-h1",
+      "relation": "partial_overlap",
+      "witness_scan": "01095060011234541725010110LOT1\u001d21SN9"
+    }
+  ]
+}
+```
+
+(上例第二条凭证中 `LOT1` 与 `21SN9` 之间为 FNC1。)
+
+- 请求体不合法(规则数量不在 2~100、规则 ID 重复、GTIN 校验位错误、日期区间倒置等)时整个请求返回 **422**。
+
+示例:
+
+```bash
+curl -s http://localhost:8000/v1/recall/rule-relations \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "rules": [
+      {"id": "recall-all", "gtin": "09506001123454"},
+      {"id": "recall-lot1", "gtin": "09506001123454", "batch": "LOT1"},
+      {"id": "recall-h1",
+       "gtin": "09506001123454",
+       "serial": "SN9",
+       "date_from": "2025-01-01",
+       "date_to": "2025-12-31"},
+      {"id": "recall-expired", "gtin": "09506001123454", "date_to": "1999-12-31"}
+    ]
+  }'
+```
+
+上例中 `recall-expired` 的日期区间整体早于 2000 年,列入 `unsatisfiable_rule_ids`;`recall-lot1` 是 `recall-all` 的真子集(`left_contains_right`);`recall-lot1` 与 `recall-h1` 各约束批号 / 序列号,为 `partial_overlap`,凭证串同时携带批号与序列号,批号后以 FNC1 分隔。
 
 ### `POST /v1/custody/audit`
 
@@ -352,11 +429,13 @@ app/
   gs1.py       # GS1 扫描串解析(AI 01/10/17/21、FNC1、]d2、校验位、日期)
   models.py    # 请求 / 响应模型与规则校验
   matcher.py   # 召回规则匹配
+  rule_relations.py # 召回规则关系分析(命中集合的交集 / 包含 / 等价判定与凭证构造)
   custody.py   # 实物交接审计(按时间重放事件,维护持有人)
   packing.py   # 装拆包装审计(按输入顺序重放装/拆操作,维护父子关系)
   isolation.py # 召回隔离计划(命中实物沿最终父链归并到最高层已封签祖先)
 tests/
   test_recall.py
+  test_rule_relations.py
   test_custody.py
   test_packing.py
   test_isolation.py
