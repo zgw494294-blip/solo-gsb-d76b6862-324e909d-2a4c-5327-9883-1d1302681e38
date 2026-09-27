@@ -229,3 +229,40 @@ class IsolationPlanResponse(BaseModel):
     units: list[IsolationUnit]  # 按 GTIN、序列号排序;未命中召回的库存不产生单元
     errors: list[IsolationScanError]  # 库存扫描错误,按原始下标排序
     operation_errors: list[PackingError]  # 装拆操作错误,按原始下标排序
+
+
+# ---------- 召回规则关系分析 (/v1/recall/rule-relations) ----------
+
+
+class RuleRelationsRequest(BaseModel):
+    """规则关系分析请求:2~100 条召回规则,格式同召回核验。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rules: list[Rule] = Field(min_length=2, max_length=100)
+
+    @field_validator("rules")
+    @classmethod
+    def _rule_ids_unique(cls, v: list[Rule]) -> list[Rule]:
+        return _ensure_unique_rule_ids(v)
+
+
+class RulePairRelation(BaseModel):
+    """一对命中集合有交集的规则:关系类别 + 一条同时命中两者的合法扫描串。"""
+
+    left_index: int  # 输入下标较小者
+    right_index: int
+    left_id: str
+    right_id: str
+    relation: Literal[
+        "equivalent",  # 等价:命中集合相同
+        "left_contains_right",  # 左包含右:右规则命中集是左规则的真子集
+        "right_contains_left",  # 右包含左:左规则命中集是右规则的真子集
+        "partial_overlap",  # 部分相交:有交集但互不包含
+    ]
+    witness: str  # 同时命中两条规则的合法 GS1 扫描串
+
+
+class RuleRelationsResponse(BaseModel):
+    impossible_rule_ids: list[str]  # 不可能命中任何合法扫描串的规则 ID,按输入顺序
+    pairs: list[RulePairRelation]  # 有交集的规则对,按 (left_index, right_index) 排序

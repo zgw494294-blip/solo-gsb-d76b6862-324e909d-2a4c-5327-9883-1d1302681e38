@@ -17,16 +17,19 @@ from .models import (
     IsolationPlanResponse,
     PackingAuditRequest,
     PackingAuditResponse,
+    RuleRelationsRequest,
+    RuleRelationsResponse,
     ScanErrorBody,
     ScanFields,
     ScanResult,
 )
 from .packing import audit_packing
+from .relations import analyze_rule_relations
 
 app = FastAPI(
     title="GS1 扫码核验 API",
-    version="1.3.0",
-    summary="解析 GS1 扫描串(AI 01/10/17/21):召回规则匹配、实物交接重放、装拆包装审计与召回隔离计划",
+    version="1.4.0",
+    summary="解析 GS1 扫描串(AI 01/10/17/21):召回规则匹配、规则关系分析、实物交接重放、装拆包装审计与召回隔离计划",
 )
 
 
@@ -85,3 +88,11 @@ def packing_audit(request: PackingAuditRequest) -> PackingAuditResponse:
 def recall_isolation_plan(request: IsolationPlanRequest) -> IsolationPlanResponse:
     """库存扫描命中召回规则后,沿最终包装父链归并到最高层已封签祖先,输出隔离单元。"""
     return build_isolation_plan(request)
+
+
+@app.post(
+    "/v1/recall/rule-relations", response_model=RuleRelationsResponse, tags=["recall"]
+)
+def recall_rule_relations(request: RuleRelationsRequest) -> RuleRelationsResponse:
+    """上线前比较召回规则的命中集合:列出不可能命中的规则与有交集的规则对。"""
+    return analyze_rule_relations(request)
